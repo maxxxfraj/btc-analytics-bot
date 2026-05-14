@@ -7,6 +7,7 @@ from aiogram.filters import Command
 
 import os
 from dotenv import load_dotenv
+from aiohttp import web
 
 load_dotenv() # Завантажує дані з .env
 TOKEN = os.getenv("BOT_TOKEN")
@@ -457,8 +458,20 @@ async def cmd_dash(message: types.Message):
     except Exception as e:
         await msg.edit_text(f"❌ Помилка: {e}")
 
+async def handle(request):
+    return web.Response(text="I am alive!")
+
 async def main():
-    print("Бот запущений! Напишіть йому /dash")
+    # Веб-сервер для Render
+    app = web.Application()
+    app.add_routes([web.get('/', handle)])
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    
+    print(f"Бот і веб-сервер запущені на порту {port}!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
