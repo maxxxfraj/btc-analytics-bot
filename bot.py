@@ -60,28 +60,33 @@ def get_rsi_intraday():
 
 def get_open_interest():
     try:
-        result = {}
         price = float(requests.get(
-            "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
+            "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT",
+            timeout=5
         ).json()['price'])
 
-        url = "https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT"
-        res = requests.get(url, timeout=5).json()
+        res = requests.get("https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT", timeout=5).json()
         binance_oi = float(res['openInterest']) * price / 1_000_000_000
 
-        url_bybit = "https://api.bybit.com/v5/market/open-interest?category=linear&symbol=BTCUSDT&intervalTime=1h&limit=1"
-        res_bybit = requests.get(url_bybit, timeout=5).json()
+        res_bybit = requests.get(
+            "https://api.bybit.com/v5/market/open-interest?category=linear&symbol=BTCUSDT&intervalTime=1h&limit=1",
+            timeout=5
+        ).json()
         bybit_oi = float(res_bybit['result']['list'][0]['openInterest']) * price / 1_000_000_000
 
-        url_okx = "https://www.okx.com/api/v5/public/open-interest?instType=SWAP&instId=BTC-USDT-SWAP"
-        res_okx = requests.get(url_okx, timeout=5).json()
+        res_okx = requests.get(
+            "https://www.okx.com/api/v5/public/open-interest?instType=SWAP&instId=BTC-USDT-SWAP",
+            timeout=5
+        ).json()
         okx_oi = float(res_okx['data'][0]['oiCcy']) * price / 1_000_000_000
 
         total = binance_oi + bybit_oi + okx_oi
         result = {'binance': binance_oi, 'bybit': bybit_oi, 'okx': okx_oi, 'total': total}
 
-        url_hist = "https://fapi.binance.com/futures/data/openInterestHist?symbol=BTCUSDT&period=1h&limit=25"
-        hist = requests.get(url_hist, timeout=5).json()
+        hist = requests.get(
+            "https://fapi.binance.com/futures/data/openInterestHist?symbol=BTCUSDT&period=1h&limit=25",
+            timeout=5
+        ).json()
         if len(hist) >= 25:
             oi_now = float(hist[-1]['sumOpenInterest'])
             oi_24h = float(hist[0]['sumOpenInterest'])
@@ -93,6 +98,159 @@ def get_open_interest():
     except:
         return None
 
+def get_channel_30d(df):
+    try:
+        df30 = df.tail(30)
+        high_30 = df30['high'].max()
+        low_30  = df30['low'].min()
+        price   = df['close'].iloc[-1]
+
+        channel_range = high_30 - low_30
+        position = (price - low_30) / channel_range
+
+        if position <= 0.33:
+            zone_text = "нижня третина (зона відскоку)"
+            zone_emoji = "🟢"
+        elif position <= 0.66:
+            zone_text = "середина каналу"
+            zone_emoji = "⚪️"
+        else:
+            zone_text = "верхня третина (зона опору)"
+            zone_emoji = "🔴"
+
+        first_close = df30['close'].iloc[0]
+        last_close  = df30['close'].iloc[-1]
+        slope_pct   = ((last_close - first_close) / first_close) * 100
+
+        if slope_pct > 5:
+            trend_text = "🟢 висхідний"
+        elif slope_pct < -5:
+            trend_text = "🔴 низхідний"
+        else:
+            trend_text = "⚪️ плоский"
+
+        return {
+            'high': high_30, 'low': low_30,
+            'position_pct': position * 100,
+            'zone_text': zone_text, 'zone_emoji': zone_emoji,
+            'slope_pct': slope_pct, 'trend_text': trend_text
+        }
+    except:
+        return None
+
+def get_hashrate_difficulty():
+    try:
+        res_hash = requests.get(
+            "https://mempool.space/api/v1/mining/hashrate/1m", timeout=8
+        ).json()
+        current_hashrate = res_hash['currentHashrate'] / 1e18
+
+        hashrates = res_hash.get('hashrates', [])
+        if len(hashrates) >= 30:
+            avg_30d = sum(h['avgHashrate'] for h in hashrates[-30:]) / 30 / 1e18
+            hash_change = ((current_hashrate - avg_30d) / avg_30d) * 100
+        else:
+            avg_30d = current_hashrate
+            hash_change = 0
+
+        hash_emoji = "🟢" if hash_change > 0 else "🔴"
+
+        res_diff = requests.get(
+            "https://mempool.space/api/v1/difficulty-adjustment", timeout=8
+        ).json()
+        current_diff = res_diff['currentDifficulty'] / 1e12
+        diff_change  = res_diff['difficultyChange']
+        blocks_until = res_diff['remainingBlocks']
+        days_until   = round(blocks_until * 10 / 60 / 24, 1)
+        diff_emoji   = "🟢" if diff_change > 0 else "🔴"
+
+        return {
+            'hashrate': current_hashrate, 'hash_change': hash_change, 'hash_emoji': hash_emoji,
+            'difficulty': current_diff, 'diff_change': diff_change,
+            'diff_emoji': diff_emoji, 'days_until': days_until
+        }
+    except:
+        return None
+
+def get_coinbase_premium():
+    try:
+        binance_price = float(requests.get(
+            "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=5
+        ).json()['price'])
+
+        coinbase_price = float(requests.get(
+            "https://api.coinbase.com/v2/prices/BTC-USD/spot", timeout=5
+        ).json()['data']['amount'])
+
+        premium_pct = ((coinbase_price - binance_price) / binance_price) * 100
+
+        if premium_pct > 0.1:
+            emoji = "🟢"
+            status = "американський попит"
+        elif premium_pct < -0.1:
+            emoji = "🔴"
+            status = "дисконт"
+        else:
+            emoji = "⚪️"
+            status = "нейтральний"
+
+        return {'premium_pct': premium_pct, 'emoji': emoji, 'status': status}
+    except:
+        return None
+
+def get_fear_greed():
+    """Fear & Greed Index — сьогодні, вчора, тиждень тому"""
+    try:
+        res = requests.get(
+            "https://api.alternative.me/fng/?limit=8",
+            timeout=5
+        ).json()
+
+        data = res['data']
+
+        today     = data[0]
+        yesterday = data[1]
+        week_ago  = data[7]
+
+        def fg_emoji(value):
+            v = int(value)
+            if v <= 25:
+                return "😱"   # Extreme Fear
+            elif v <= 45:
+                return "😨"   # Fear
+            elif v <= 55:
+                return "😐"   # Neutral
+            elif v <= 75:
+                return "😏"   # Greed
+            else:
+                return "🤑"   # Extreme Greed
+
+        def fg_color(value):
+            v = int(value)
+            if v <= 25:
+                return "🔴"
+            elif v <= 45:
+                return "🟠"
+            elif v <= 55:
+                return "⚪️"
+            elif v <= 75:
+                return "🟡"
+            else:
+                return "🟢"
+
+        return {
+            'today_value':      int(today['value']),
+            'today_label':      today['value_classification'],
+            'today_emoji':      fg_emoji(today['value']),
+            'today_color':      fg_color(today['value']),
+            'yesterday_value':  int(yesterday['value']),
+            'yesterday_label':  yesterday['value_classification'],
+            'week_value':       int(week_ago['value']),
+            'week_label':       week_ago['value_classification'],
+        }
+    except:
+        return None
+
 def get_coinbase_ios_rank():
     try:
         url = "https://itunes.apple.com/us/rss/topfreeapplications/limit=200/genre=6015/json"
@@ -101,55 +259,6 @@ def get_coinbase_ios_rank():
         for i, app in enumerate(apps):
             if 'coinbase' in app['im:name']['label'].lower():
                 return i + 1
-        return None
-    except:
-        return None
-
-def get_coinbase_android_rank():
-    try:
-        # Google Play топ фінансових додатків
-        url = "https://play.google.com/store/apps/collection/cluster?clp=ogooCAEqAggIMiQKHmNvbS5jb2luYmFzZS5hbmRyb2lkLmNvaW5iYXNlEAEYAw%3D%3D&hl=en&gl=us"
-        # Використовуємо RSS Google Play топ Finance
-        rss_url = "https://play.google.com/store/apps/collection/topselling_free?hl=en&gl=us"
-
-        # Альтернатива — iTunes-стиль пошук через Google Play API
-        search_url = "https://itunes.apple.com/lookup?bundleId=com.coinbase.android&country=us"
-        res = requests.get(search_url, timeout=5).json()
-
-        # Google Play топ через публічний endpoint
-        gplay_url = "https://play.google.com/store/apps/top/chart?hl=en&gl=US&cat=FINANCE&num=200"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        r = requests.get(gplay_url, headers=headers, timeout=5)
-
-        # Парсимо позицію Coinbase
-        content = r.text.lower()
-        apps_list = content.split('com.coinbase.android')
-        if len(apps_list) > 1:
-            # Рахуємо скільки додатків перед Coinbase
-            before = content[:content.find('com.coinbase.android')]
-            rank = before.count('market://details?id=') + 1
-            return rank
-        return None
-    except:
-        return None
-
-def get_coinbase_gplay_rank():
-    """Отримує рейтинг Coinbase в Google Play Finance через RSS"""
-    try:
-        url = "https://androidrank.org/application/coinbase-buy-bitcoin-ether/com.coinbase.android"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        res = requests.get(url, headers=headers, timeout=5)
-        content = res.text
-
-        # Шукаємо рейтинг у Finance
-        if 'Finance' in content and '#' in content:
-            idx = content.find('Top Finance')
-            if idx > 0:
-                snippet = content[idx:idx+50]
-                import re
-                match = re.search(r'#(\d+)', snippet)
-                if match:
-                    return int(match.group(1))
         return None
     except:
         return None
@@ -214,8 +323,11 @@ async def cmd_dash(message: types.Message):
         pct_24, high_24, low_24, vol_m, fund_rate = get_btc_extra_data()
         rsi_intraday = get_rsi_intraday()
         ios_rank = get_coinbase_ios_rank()
-        android_rank = get_coinbase_gplay_rank()
         oi_data = get_open_interest()
+        channel = get_channel_30d(df)
+        onchain = get_hashrate_difficulty()
+        cb_premium = get_coinbase_premium()
+        fg = get_fear_greed()
 
         current_price = df['close'].iloc[-1]
         rsi = df['RSI'].iloc[-1]
@@ -227,9 +339,9 @@ async def cmd_dash(message: types.Message):
 
         bull_pct, neutral_pct, bear_pct = calculate_forecast(current_price, ma50, rsi, fund_rate)
 
-        price_icon = "🟢" if pct_24 > 0 else "🔴"
-        rsi_status = "перекуплений 🔴" if rsi > 70 else "перепроданий 🟢" if rsi < 30 else "нейтр. ⚪️"
-        ma_status = "🟢 Бичий" if current_price > ma50 else "🔴 Ведмежий"
+        price_icon  = "🟢" if pct_24 > 0 else "🔴"
+        rsi_status  = "перекуплений 🔴" if rsi > 70 else "перепроданий 🟢" if rsi < 30 else "нейтр. ⚪️"
+        ma_status   = "🟢 Бичий" if current_price > ma50 else "🔴 Ведмежий"
         fund_status = "🔴 перегрів лонгів" if fund_rate > 0.01 else "🟢 перегрів шортів" if fund_rate < 0 else "⚪️ нейтральний"
 
         # OI блок
@@ -237,14 +349,12 @@ async def cmd_dash(message: types.Message):
             binance_pct = int(oi_data['binance'] / oi_data['total'] * 100)
             bybit_pct   = int(oi_data['bybit']   / oi_data['total'] * 100)
             okx_pct     = int(oi_data['okx']     / oi_data['total'] * 100)
-
             if oi_data['change_24h'] is not None:
                 ch = oi_data['change_24h']
                 oi_ch_emoji = "🟢" if ch > 2 else "🔴" if ch < -2 else "⚪️"
                 oi_change_text = f"{oi_ch_emoji} {ch:+.1f}% за 24h"
             else:
                 oi_change_text = ""
-
             oi_text = (
                 f"📊 *OI (BTC, агрегат)*\n"
                 f"Binance: ${oi_data['binance']:.2f}B ({binance_pct}%)\n"
@@ -254,6 +364,55 @@ async def cmd_dash(message: types.Message):
             )
         else:
             oi_text = "📊 *OI:* дані недоступні\n\n"
+
+        # Канал 30d
+        if channel:
+            channel_text = (
+                f"📉 *Канал (30d)*\n"
+                f"Тренд: {channel['trend_text']} ({channel['slope_pct']:+.1f}%)\n"
+                f"Верх: ${channel['high']:,.0f}  Низ: ${channel['low']:,.0f}\n"
+                f"Позиція: {channel['zone_emoji']} {channel['position_pct']:.0f}% — {channel['zone_text']}\n\n"
+            )
+        else:
+            channel_text = ""
+
+        # Hashrate + Difficulty
+        if onchain:
+            onchain_text = (
+                f"🔧 *Fundamentals (BTC)*\n"
+                f"⚡️ Hashrate: {onchain['hashrate']:.0f} EH/s  "
+                f"{onchain['hash_emoji']} {onchain['hash_change']:+.1f}% до 30d avg\n"
+                f"🔧 Difficulty: {onchain['difficulty']:.1f}T  "
+                f"{onchain['diff_emoji']} {onchain['diff_change']:+.2f}% через {onchain['days_until']}d\n\n"
+            )
+        else:
+            onchain_text = ""
+
+        # Coinbase Premium
+        if cb_premium:
+            cb_prem_text = (
+                f"🇺🇸 Coinbase prem: {cb_premium['emoji']} {cb_premium['premium_pct']:+.3f}%  "
+                f"{cb_premium['status']}\n\n"
+            )
+        else:
+            cb_prem_text = ""
+
+        # Fear & Greed
+        if fg:
+            # Зміна порівняно з вчора
+            delta = fg['today_value'] - fg['yesterday_value']
+            delta_text = f"{delta:+d} до вчора" if delta != 0 else "без змін"
+            delta_emoji = "🟢" if delta > 0 else "🔴" if delta < 0 else "⚪️"
+
+            fg_text = (
+                f"😱 *Fear & Greed Index*\n"
+                f"Зараз:   {fg['today_color']} {fg['today_value']} — {fg['today_label']} {fg['today_emoji']}\n"
+                f"Вчора:   {fg['yesterday_value']} — {fg['yesterday_label']}\n"
+                f"7d тому: {fg['week_value']} — {fg['week_label']}\n"
+                f"Зміна:   {delta_emoji} {delta_text}\n\n"
+            )
+        else:
+            fg_text = ""
 
         text = (
             f"📊 🟠 *BTC Dashboard Pro*\n\n"
@@ -269,6 +428,8 @@ async def cmd_dash(message: types.Message):
             f"MA50: ${ma50:,.0f} | MA200: ${ma200:,.0f}\n"
             f"RSI 1D: {rsi:.0f}  {rsi_status}\n\n"
 
+            + channel_text +
+
             f"📊 *RSI Інтрадей*\n"
             f"5m:  {rsi_label(rsi_intraday['5m'])}\n"
             f"15m: {rsi_label(rsi_intraday['15m'])}\n"
@@ -277,11 +438,13 @@ async def cmd_dash(message: types.Message):
             f"💸 *Funding (BTC)*\n"
             f"Зараз: {fund_rate:+.4f}% ({fund_status})\n\n"
 
-            + oi_text +
+            + oi_text
+            + onchain_text
+            + cb_prem_text
+            + fg_text +
 
-            f"📱 *Coinbase App Store*\n"
-            f"iOS Finance:  {rank_emoji(ios_rank)}\n"
-            f"Android Finance: {rank_emoji(android_rank)}\n\n"
+            f"📱 *Coinbase App Store (US)*\n"
+            f"iOS Finance: {rank_emoji(ios_rank)}\n\n"
 
             f"🎯 *Прогноз напрямку (24-72ч)*\n"
             f"🟢 ↑ Вверх:   {bull_pct}%\n"
