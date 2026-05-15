@@ -11,6 +11,7 @@ import numpy as np
 
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
+COINGLASS_API_KEY = os.getenv("COINGLASS_API_KEY")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
@@ -62,175 +63,205 @@ def get_rsi_intraday():
 def get_obv_volume(df):
     try:
         df['OBV'] = ta.obv(df['close'], df['volume'])
-        obv_20d  = df['OBV'].tail(20)
+        obv_20d   = df['OBV'].tail(20)
         obv_slope = obv_20d.iloc[-1] - obv_20d.iloc[0]
         obv_std   = obv_20d.std()
 
-        if obv_slope > obv_std * 0.5:
-            obv_status = "🟢 зростає"
-        elif obv_slope < -obv_std * 0.5:
-            obv_status = "🔴 падає"
-        else:
-            obv_status = "⚪️ плоский"
+        if obv_slope > obv_std * 0.5:    obv_status = "🟢 зростає"
+        elif obv_slope < -obv_std * 0.5: obv_status = "🔴 падає"
+        else:                            obv_status = "⚪️ плоский"
 
-        vol_this_week = df['volume'].tail(7).sum()
-        vol_prev_week = df['volume'].tail(14).head(7).sum()
+        vol_this_week  = df['volume'].tail(7).sum()
+        vol_prev_week  = df['volume'].tail(14).head(7).sum()
         vol_change_pct = ((vol_this_week - vol_prev_week) / vol_prev_week) * 100
-        vol_emoji = "🟢" if vol_change_pct > 10 else "🔴" if vol_change_pct < -10 else "⚪️"
+        vol_emoji      = "🟢" if vol_change_pct > 10 else "🔴" if vol_change_pct < -10 else "⚪️"
 
         price_change = df['close'].iloc[-1] - df['close'].iloc[-20]
-        if price_change > 0 and obv_slope < 0:
-            divergence = "⚠️ ведмежа дивергенція"
-        elif price_change < 0 and obv_slope > 0:
-            divergence = "💡 бича дивергенція"
-        else:
-            divergence = ""
+        if price_change > 0 and obv_slope < 0:   divergence = "⚠️ ведмежа дивергенція"
+        elif price_change < 0 and obv_slope > 0: divergence = "💡 бича дивергенція"
+        else:                                     divergence = ""
 
         return {
-            'obv_status': obv_status,
-            'divergence': divergence,
-            'vol_change_pct': vol_change_pct,
-            'vol_emoji': vol_emoji,
+            'obv_status': obv_status, 'divergence': divergence,
+            'vol_change_pct': vol_change_pct, 'vol_emoji': vol_emoji,
         }
     except:
         return None
 
 def get_anchored_vwap(df):
-    """
-    Anchored VWAP від останнього swing-low за 14 днів.
-    Swing-low = мінімальний low за останні 14 свічок.
-    """
     try:
-        lookback = 14
-        df14 = df.tail(lookback).copy().reset_index(drop=True)
-
-        # Знаходимо swing-low — індекс мінімального low
+        lookback      = 14
+        df14          = df.tail(lookback).copy().reset_index(drop=True)
         swing_low_idx = df14['low'].idxmin()
-        days_ago = lookback - swing_low_idx
+        days_ago      = lookback - swing_low_idx
 
-        # Рахуємо VWAP від swing-low до сьогодні
         df_anchor = df14.iloc[swing_low_idx:].copy()
         df_anchor['typical_price'] = (df_anchor['high'] + df_anchor['low'] + df_anchor['close']) / 3
-        df_anchor['tp_vol'] = df_anchor['typical_price'] * df_anchor['volume']
+        df_anchor['tp_vol']        = df_anchor['typical_price'] * df_anchor['volume']
 
-        vwap = df_anchor['tp_vol'].sum() / df_anchor['volume'].sum()
+        vwap          = df_anchor['tp_vol'].sum() / df_anchor['volume'].sum()
         current_price = df['close'].iloc[-1]
         vwap_diff_pct = ((current_price - vwap) / vwap) * 100
 
-        if vwap_diff_pct > 1:
-            vwap_emoji = "🟢"
-            vwap_status = "ціна вище VWAP"
-        elif vwap_diff_pct < -1:
-            vwap_emoji = "🔴"
-            vwap_status = "ціна нижче VWAP"
-        else:
-            vwap_emoji = "⚪️"
-            vwap_status = "ціна біля VWAP"
+        if vwap_diff_pct > 1:    vwap_emoji, vwap_status = "🟢", "ціна вище VWAP"
+        elif vwap_diff_pct < -1: vwap_emoji, vwap_status = "🔴", "ціна нижче VWAP"
+        else:                    vwap_emoji, vwap_status = "⚪️", "ціна біля VWAP"
 
         return {
-            'vwap': vwap,
-            'diff_pct': vwap_diff_pct,
-            'days_ago': days_ago,
-            'emoji': vwap_emoji,
-            'status': vwap_status,
+            'vwap': vwap, 'diff_pct': vwap_diff_pct,
+            'days_ago': days_ago, 'emoji': vwap_emoji, 'status': vwap_status,
         }
     except:
         return None
 
 def get_poc_value_area(df, days=60):
-    """
-    POC (Point of Control) та Value Area за останні N днів.
-    Ділимо діапазон цін на 100 бінів, знаходимо бін з найбільшим об'ємом.
-    Value Area = 70% від загального об'єму навколо POC.
-    """
     try:
-        df_poc = df.tail(days).copy()
+        df_poc        = df.tail(days).copy()
         current_price = df['close'].iloc[-1]
+        price_min     = df_poc['low'].min()
+        price_max     = df_poc['high'].max()
 
-        price_min = df_poc['low'].min()
-        price_max = df_poc['high'].max()
-
-        # 100 цінових рівнів
-        bins = 100
-        price_levels = np.linspace(price_min, price_max, bins + 1)
+        bins          = 100
+        price_levels  = np.linspace(price_min, price_max, bins + 1)
         volume_profile = np.zeros(bins)
 
         for _, row in df_poc.iterrows():
-            # Розподіляємо об'єм рівномірно по бінах які перекриває свічка
             for i in range(bins):
-                bin_low  = price_levels[i]
-                bin_high = price_levels[i + 1]
-                # Перетин свічки з біном
+                bin_low      = price_levels[i]
+                bin_high     = price_levels[i + 1]
                 overlap_low  = max(row['low'],  bin_low)
                 overlap_high = min(row['high'], bin_high)
                 if overlap_high > overlap_low:
                     candle_range = row['high'] - row['low']
                     if candle_range > 0:
-                        overlap_pct = (overlap_high - overlap_low) / candle_range
-                        volume_profile[i] += row['volume'] * overlap_pct
+                        overlap_pct         = (overlap_high - overlap_low) / candle_range
+                        volume_profile[i]  += row['volume'] * overlap_pct
 
-        # POC — бін з максимальним об'ємом
         poc_idx   = np.argmax(volume_profile)
         poc_price = (price_levels[poc_idx] + price_levels[poc_idx + 1]) / 2
 
-        # Value Area — 70% об'єму навколо POC
-        total_volume = volume_profile.sum()
-        target_vol   = total_volume * 0.70
-
-        va_high_idx = poc_idx
-        va_low_idx  = poc_idx
-        accumulated = volume_profile[poc_idx]
+        total_volume  = volume_profile.sum()
+        target_vol    = total_volume * 0.70
+        va_high_idx   = poc_idx
+        va_low_idx    = poc_idx
+        accumulated   = volume_profile[poc_idx]
 
         while accumulated < target_vol:
             can_go_up   = va_high_idx < bins - 1
             can_go_down = va_low_idx > 0
-
             if can_go_up and can_go_down:
                 if volume_profile[va_high_idx + 1] >= volume_profile[va_low_idx - 1]:
                     va_high_idx += 1
                     accumulated += volume_profile[va_high_idx]
                 else:
-                    va_low_idx -= 1
+                    va_low_idx  -= 1
                     accumulated += volume_profile[va_low_idx]
             elif can_go_up:
                 va_high_idx += 1
                 accumulated += volume_profile[va_high_idx]
             elif can_go_down:
-                va_low_idx -= 1
+                va_low_idx  -= 1
                 accumulated += volume_profile[va_low_idx]
             else:
                 break
 
-        va_high = price_levels[va_high_idx + 1]
-        va_low  = price_levels[va_low_idx]
-
+        va_high      = price_levels[va_high_idx + 1]
+        va_low       = price_levels[va_low_idx]
         poc_diff_pct = ((current_price - poc_price) / poc_price) * 100
 
-        if poc_diff_pct > 3:
-            poc_emoji = "🟢"
-        elif poc_diff_pct < -3:
-            poc_emoji = "🔴"
-        else:
-            poc_emoji = "🟡"
+        if poc_diff_pct > 3:    poc_emoji = "🟢"
+        elif poc_diff_pct < -3: poc_emoji = "🔴"
+        else:                   poc_emoji = "🟡"
 
-        # Де ціна відносно Value Area
-        if current_price > va_high:
-            va_status = "🔴 вище Value Area"
-        elif current_price < va_low:
-            va_status = "🟢 нижче Value Area (зона інтересу)"
-        else:
-            va_status = "⚪️ всередині Value Area"
+        if current_price > va_high:   va_status = "🔴 вище Value Area"
+        elif current_price < va_low:  va_status = "🟢 нижче Value Area (зона інтересу)"
+        else:                         va_status = "⚪️ всередині Value Area"
 
         return {
-            'poc': poc_price,
-            'poc_diff_pct': poc_diff_pct,
-            'poc_emoji': poc_emoji,
-            'va_high': va_high,
-            'va_low': va_low,
-            'va_status': va_status,
-            'days': days,
+            'poc': poc_price, 'poc_diff_pct': poc_diff_pct, 'poc_emoji': poc_emoji,
+            'va_high': va_high, 'va_low': va_low, 'va_status': va_status, 'days': days,
         }
     except:
+        return None
+
+def get_etf_flows():
+    """ETF flows через CoinGlass API"""
+    try:
+        headers = {
+            "accept": "application/json",
+            "CG-API-KEY": COINGLASS_API_KEY
+        }
+
+        # Останні 30 днів flows
+        url = "https://api.coinglass.com/api/fund/fundFlowsInfo"
+        res = requests.get(url, headers=headers, timeout=8).json()
+
+        if res.get('code') != '0' and res.get('code') != 0:
+            # Пробуємо альтернативний endpoint
+            url2 = "https://api.coinglass.com/api/etf/bitcoin/netflow"
+            res = requests.get(url2, headers=headers, timeout=8).json()
+
+        data = res.get('data', [])
+        if not data:
+            return None
+
+        # Останній день
+        latest = data[-1] if isinstance(data, list) else data
+
+        # Загальний flow за день
+        total_1d = float(latest.get('totalNetFlow', latest.get('netFlow', 0))) / 1e6  # млн $
+
+        # Flow за 5 днів
+        if isinstance(data, list) and len(data) >= 5:
+            flow_5d = sum(float(d.get('totalNetFlow', d.get('netFlow', 0))) for d in data[-5:]) / 1e6
+        else:
+            flow_5d = None
+
+        # Flow за 30 днів
+        if isinstance(data, list) and len(data) >= 30:
+            flow_30d = sum(float(d.get('totalNetFlow', d.get('netFlow', 0))) for d in data[-30:]) / 1e6
+        else:
+            flow_30d = None
+
+        # Топ фонди по відтоку/притоку
+        fund_flows = latest.get('list', [])
+        top_outflow = []
+        top_inflow  = []
+
+        for fund in fund_flows:
+            name = fund.get('fundName', fund.get('name', ''))
+            flow = float(fund.get('netFlow', 0)) / 1e6
+            if flow < -10:
+                top_outflow.append((name, flow))
+            elif flow > 10:
+                top_inflow.append((name, flow))
+
+        top_outflow.sort(key=lambda x: x[1])
+        top_inflow.sort(key=lambda x: x[1], reverse=True)
+
+        # Серія відтоків/притоків поспіль
+        streak = 0
+        streak_type = ""
+        if isinstance(data, list) and len(data) >= 2:
+            last_flow = float(data[-1].get('totalNetFlow', data[-1].get('netFlow', 0)))
+            streak_type = "приток" if last_flow > 0 else "відтік"
+            for d in reversed(data):
+                f = float(d.get('totalNetFlow', d.get('netFlow', 0)))
+                if (f > 0 and streak_type == "приток") or (f < 0 and streak_type == "відтік"):
+                    streak += 1
+                else:
+                    break
+
+        return {
+            'total_1d':    total_1d,
+            'flow_5d':     flow_5d,
+            'flow_30d':    flow_30d,
+            'top_outflow': top_outflow[:2],
+            'top_inflow':  top_inflow[:2],
+            'streak':      streak,
+            'streak_type': streak_type,
+        }
+    except Exception as e:
         return None
 
 def get_open_interest():
@@ -239,20 +270,20 @@ def get_open_interest():
             "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=5
         ).json()['price'])
 
-        res = requests.get("https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT", timeout=5).json()
+        res        = requests.get("https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT", timeout=5).json()
         binance_oi = float(res['openInterest']) * price / 1_000_000_000
 
-        res_bybit = requests.get(
+        res_bybit  = requests.get(
             "https://api.bybit.com/v5/market/open-interest?category=linear&symbol=BTCUSDT&intervalTime=1h&limit=1",
             timeout=5
         ).json()
-        bybit_oi = float(res_bybit['result']['list'][0]['openInterest']) * price / 1_000_000_000
+        bybit_oi   = float(res_bybit['result']['list'][0]['openInterest']) * price / 1_000_000_000
 
-        res_okx = requests.get(
+        res_okx    = requests.get(
             "https://www.okx.com/api/v5/public/open-interest?instType=SWAP&instId=BTC-USDT-SWAP",
             timeout=5
         ).json()
-        okx_oi = float(res_okx['data'][0]['oiCcy']) * price / 1_000_000_000
+        okx_oi     = float(res_okx['data'][0]['oiCcy']) * price / 1_000_000_000
 
         total  = binance_oi + bybit_oi + okx_oi
         result = {'binance': binance_oi, 'bybit': bybit_oi, 'okx': okx_oi, 'total': total}
@@ -278,18 +309,11 @@ def get_channel_30d(df):
         high_30 = df30['high'].max()
         low_30  = df30['low'].min()
         price   = df['close'].iloc[-1]
-
         position = (price - low_30) / (high_30 - low_30)
 
-        if position <= 0.33:
-            zone_text  = "нижня третина (зона відскоку)"
-            zone_emoji = "🟢"
-        elif position <= 0.66:
-            zone_text  = "середина каналу"
-            zone_emoji = "⚪️"
-        else:
-            zone_text  = "верхня третина (зона опору)"
-            zone_emoji = "🔴"
+        if position <= 0.33:    zone_text, zone_emoji = "нижня третина (зона відскоку)", "🟢"
+        elif position <= 0.66:  zone_text, zone_emoji = "середина каналу", "⚪️"
+        else:                   zone_text, zone_emoji = "верхня третина (зона опору)", "🔴"
 
         slope_pct = ((df30['close'].iloc[-1] - df30['close'].iloc[0]) / df30['close'].iloc[0]) * 100
 
@@ -298,8 +322,7 @@ def get_channel_30d(df):
         else:                trend_text = "⚪️ плоский"
 
         return {
-            'high': high_30, 'low': low_30,
-            'position_pct': position * 100,
+            'high': high_30, 'low': low_30, 'position_pct': position * 100,
             'zone_text': zone_text, 'zone_emoji': zone_emoji,
             'slope_pct': slope_pct, 'trend_text': trend_text
         }
@@ -308,28 +331,25 @@ def get_channel_30d(df):
 
 def get_hashrate_difficulty():
     try:
-        res_hash = requests.get(
-            "https://mempool.space/api/v1/mining/hashrate/1m", timeout=8
-        ).json()
+        res_hash         = requests.get("https://mempool.space/api/v1/mining/hashrate/1m", timeout=8).json()
         current_hashrate = res_hash['currentHashrate'] / 1e18
-        hashrates = res_hash.get('hashrates', [])
+        hashrates        = res_hash.get('hashrates', [])
+
         if len(hashrates) >= 30:
             avg_30d     = sum(h['avgHashrate'] for h in hashrates[-30:]) / 30 / 1e18
             hash_change = ((current_hashrate - avg_30d) / avg_30d) * 100
         else:
             hash_change = 0
-        hash_emoji = "🟢" if hash_change > 0 else "🔴"
 
-        res_diff     = requests.get("https://mempool.space/api/v1/difficulty-adjustment", timeout=8).json()
-        current_diff = res_diff['currentDifficulty'] / 1e12
-        diff_change  = res_diff['difficultyChange']
-        days_until   = round(res_diff['remainingBlocks'] * 10 / 60 / 24, 1)
-        diff_emoji   = "🟢" if diff_change > 0 else "🔴"
+        hash_emoji = "🟢" if hash_change > 0 else "🔴"
+        res_diff   = requests.get("https://mempool.space/api/v1/difficulty-adjustment", timeout=8).json()
 
         return {
             'hashrate': current_hashrate, 'hash_change': hash_change, 'hash_emoji': hash_emoji,
-            'difficulty': current_diff, 'diff_change': diff_change,
-            'diff_emoji': diff_emoji, 'days_until': days_until
+            'difficulty': res_diff['currentDifficulty'] / 1e12,
+            'diff_change': res_diff['difficultyChange'],
+            'diff_emoji': "🟢" if res_diff['difficultyChange'] > 0 else "🔴",
+            'days_until': round(res_diff['remainingBlocks'] * 10 / 60 / 24, 1)
         }
     except:
         return None
@@ -354,19 +374,19 @@ def get_fear_greed():
 
         def fg_emoji(v):
             v = int(v)
-            if v <= 25:   return "😱"
+            if v <= 25: return "😱"
             elif v <= 45: return "😨"
             elif v <= 55: return "😐"
             elif v <= 75: return "😏"
-            else:         return "🤑"
+            else: return "🤑"
 
         def fg_color(v):
             v = int(v)
-            if v <= 25:   return "🔴"
+            if v <= 25: return "🔴"
             elif v <= 45: return "🟠"
             elif v <= 55: return "⚪️"
             elif v <= 75: return "🟡"
-            else:         return "🟢"
+            else: return "🟢"
 
         return {
             'today_value':     int(data[0]['value']),
@@ -410,9 +430,9 @@ def calculate_forecast(current_price, ma50, rsi, fund_rate):
     if current_price > ma50: bull_score += 25
     else:                    bear_score += 25
 
-    if rsi > 65:        bear_score    += 30
-    elif rsi < 35:      bull_score    += 30
-    else:               neutral_score += 20
+    if rsi > 65:       bear_score    += 30
+    elif rsi < 35:     bull_score    += 30
+    else:              neutral_score += 20
 
     if fund_rate > 0.01:  bear_score += 15
     elif fund_rate < 0:   bull_score += 15
@@ -421,7 +441,6 @@ def calculate_forecast(current_price, ma50, rsi, fund_rate):
     bull_pct    = int((bull_score / total) * 100)
     bear_pct    = int((bear_score / total) * 100)
     neutral_pct = 100 - bull_pct - bear_pct
-
     return bull_pct, neutral_pct, bear_pct
 
 @dp.message(Command("start"))
@@ -445,6 +464,7 @@ async def cmd_dash(message: types.Message):
         obv_vol      = get_obv_volume(df)
         vwap         = get_anchored_vwap(df)
         poc          = get_poc_value_area(df, days=60)
+        etf          = get_etf_flows()
 
         current_price = df['close'].iloc[-1]
         rsi   = df['RSI'].iloc[-1]
@@ -461,13 +481,47 @@ async def cmd_dash(message: types.Message):
         ma_status   = "🟢 Бичий" if current_price > ma50 else "🔴 Ведмежий"
         fund_status = "🔴 перегрів лонгів" if fund_rate > 0.01 else "🟢 перегрів шортів" if fund_rate < 0 else "⚪️ нейтральний"
 
+        # ETF flows блок
+        if etf:
+            flow_1d_emoji = "🟢" if etf['total_1d'] > 0 else "🔴"
+            flow_1d_text  = f"{flow_1d_emoji} {'+' if etf['total_1d'] > 0 else ''}{etf['total_1d']:.0f}M за день"
+
+            flow_5d_text  = ""
+            if etf['flow_5d'] is not None:
+                e = "🟢" if etf['flow_5d'] > 0 else "🔴"
+                flow_5d_text = f"\n📅 5 днів: {e} {'+' if etf['flow_5d'] > 0 else ''}{etf['flow_5d']:.0f}M"
+
+            flow_30d_text = ""
+            if etf['flow_30d'] is not None:
+                e = "🟢" if etf['flow_30d'] > 0 else "🔴"
+                flow_30d_text = f"\n📆 30 днів: {e} {'+' if etf['flow_30d'] > 0 else ''}{etf['flow_30d']:.0f}M"
+
+            streak_emoji = "🟢" if etf['streak_type'] == "приток" else "🔴"
+            streak_text  = f"\n{streak_emoji} серія: {etf['streak_type']} {etf['streak']} дн. поспіль"
+
+            top_text = ""
+            if etf['top_outflow']:
+                funds = ", ".join([f"🔴 {n} ${f:.0f}M" for n, f in etf['top_outflow']])
+                top_text += f"\n▸ Відтоки: {funds}"
+            if etf['top_inflow']:
+                funds = ", ".join([f"🟢 {n} +${f:.0f}M" for n, f in etf['top_inflow']])
+                top_text += f"\n▸ Притоки: {funds}"
+
+            etf_text = (
+                f"💰 *BTC ETF flows*\n"
+                f"{flow_1d_text}{flow_5d_text}{flow_30d_text}"
+                f"{streak_text}{top_text}\n\n"
+            )
+        else:
+            etf_text = ""
+
         # OI блок
         if oi_data:
             binance_pct = int(oi_data['binance'] / oi_data['total'] * 100)
             bybit_pct   = int(oi_data['bybit']   / oi_data['total'] * 100)
             okx_pct     = int(oi_data['okx']     / oi_data['total'] * 100)
             if oi_data['change_24h'] is not None:
-                ch = oi_data['change_24h']
+                ch             = oi_data['change_24h']
                 oi_ch_emoji    = "🟢" if ch > 2 else "🔴" if ch < -2 else "⚪️"
                 oi_change_text = f"{oi_ch_emoji} {ch:+.1f}% за 24h"
             else:
@@ -579,7 +633,8 @@ async def cmd_dash(message: types.Message):
             + channel_text
             + obv_text
             + vwap_text
-            + poc_text +
+            + poc_text
+            + etf_text +
 
             f"📊 *RSI Інтрадей*\n"
             f"5m:  {rsi_label(rsi_intraday['5m'])}\n"
