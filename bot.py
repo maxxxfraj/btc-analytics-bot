@@ -4,12 +4,11 @@ import pandas as pd
 import pandas_ta as ta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-
 import os
 from dotenv import load_dotenv
 from aiohttp import web
 
-load_dotenv() # Завантажує дані з .env
+load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 
 bot = Bot(token=TOKEN)
@@ -58,6 +57,49 @@ def get_rsi_intraday():
         rsi = ta.rsi(df['close'], length=14).iloc[-1]
         result[interval] = rsi
     return result
+
+def get_obv_volume(df):
+    """OBV та порівняння об'єму 7d vs попередній тиждень"""
+    try:
+        # OBV
+        df['OBV'] = ta.obv(df['close'], df['volume'])
+        obv_now    = df['OBV'].iloc[-1]
+        obv_20d    = df['OBV'].tail(20)
+        obv_slope  = obv_20d.iloc[-1] - obv_20d.iloc[0]
+
+        # Тренд OBV
+        obv_std = obv_20d.std()
+        if obv_slope > obv_std * 0.5:
+            obv_status = "🟢 зростає"
+        elif obv_slope < -obv_std * 0.5:
+            obv_status = "🔴 падає"
+        else:
+            obv_status = "⚪️ плоский"
+
+        # Volume 7d vs попередній тиждень
+        vol_this_week = df['volume'].tail(7).sum()
+        vol_prev_week = df['volume'].tail(14).head(7).sum()
+        vol_change_pct = ((vol_this_week - vol_prev_week) / vol_prev_week) * 100
+        vol_emoji = "🟢" if vol_change_pct > 10 else "🔴" if vol_change_pct < -10 else "⚪️"
+
+        # Порівняння ціна vs OBV (дивергенція)
+        price_change = df['close'].iloc[-1] - df['close'].iloc[-20]
+        if price_change > 0 and obv_slope < 0:
+            divergence = "⚠️ ведмежа дивергенція"
+        elif price_change < 0 and obv_slope > 0:
+            divergence = "💡 бича дивергенція"
+        else:
+            divergence = ""
+
+        return {
+            'obv_status': obv_status,
+            'divergence': divergence,
+            'vol_change_pct': vol_change_pct,
+            'vol_emoji': vol_emoji,
+            'vol_this_week': vol_this_week / 1e9,  # млрд BTC
+        }
+    except:
+        return None
 
 def get_open_interest():
     try:
@@ -110,13 +152,13 @@ def get_channel_30d(df):
         position = (price - low_30) / channel_range
 
         if position <= 0.33:
-            zone_text = "нижня третина (зона відскоку)"
+            zone_text  = "нижня третина (зона відскоку)"
             zone_emoji = "🟢"
         elif position <= 0.66:
-            zone_text = "середина каналу"
+            zone_text  = "середина каналу"
             zone_emoji = "⚪️"
         else:
-            zone_text = "верхня третина (зона опору)"
+            zone_text  = "верхня третина (зона опору)"
             zone_emoji = "🔴"
 
         first_close = df30['close'].iloc[0]
@@ -151,7 +193,6 @@ def get_hashrate_difficulty():
             avg_30d = sum(h['avgHashrate'] for h in hashrates[-30:]) / 30 / 1e18
             hash_change = ((current_hashrate - avg_30d) / avg_30d) * 100
         else:
-            avg_30d = current_hashrate
             hash_change = 0
 
         hash_emoji = "🟢" if hash_change > 0 else "🔴"
@@ -186,13 +227,13 @@ def get_coinbase_premium():
         premium_pct = ((coinbase_price - binance_price) / binance_price) * 100
 
         if premium_pct > 0.1:
-            emoji = "🟢"
+            emoji  = "🟢"
             status = "американський попит"
         elif premium_pct < -0.1:
-            emoji = "🔴"
+            emoji  = "🔴"
             status = "дисконт"
         else:
-            emoji = "⚪️"
+            emoji  = "⚪️"
             status = "нейтральний"
 
         return {'premium_pct': premium_pct, 'emoji': emoji, 'status': status}
@@ -200,13 +241,8 @@ def get_coinbase_premium():
         return None
 
 def get_fear_greed():
-    """Fear & Greed Index — сьогодні, вчора, тиждень тому"""
     try:
-        res = requests.get(
-            "https://api.alternative.me/fng/?limit=8",
-            timeout=5
-        ).json()
-
+        res  = requests.get("https://api.alternative.me/fng/?limit=8", timeout=5).json()
         data = res['data']
 
         today     = data[0]
@@ -215,39 +251,29 @@ def get_fear_greed():
 
         def fg_emoji(value):
             v = int(value)
-            if v <= 25:
-                return "😱"   # Extreme Fear
-            elif v <= 45:
-                return "😨"   # Fear
-            elif v <= 55:
-                return "😐"   # Neutral
-            elif v <= 75:
-                return "😏"   # Greed
-            else:
-                return "🤑"   # Extreme Greed
+            if v <= 25:   return "😱"
+            elif v <= 45: return "😨"
+            elif v <= 55: return "😐"
+            elif v <= 75: return "😏"
+            else:         return "🤑"
 
         def fg_color(value):
             v = int(value)
-            if v <= 25:
-                return "🔴"
-            elif v <= 45:
-                return "🟠"
-            elif v <= 55:
-                return "⚪️"
-            elif v <= 75:
-                return "🟡"
-            else:
-                return "🟢"
+            if v <= 25:   return "🔴"
+            elif v <= 45: return "🟠"
+            elif v <= 55: return "⚪️"
+            elif v <= 75: return "🟡"
+            else:         return "🟢"
 
         return {
-            'today_value':      int(today['value']),
-            'today_label':      today['value_classification'],
-            'today_emoji':      fg_emoji(today['value']),
-            'today_color':      fg_color(today['value']),
-            'yesterday_value':  int(yesterday['value']),
-            'yesterday_label':  yesterday['value_classification'],
-            'week_value':       int(week_ago['value']),
-            'week_label':       week_ago['value_classification'],
+            'today_value':     int(today['value']),
+            'today_label':     today['value_classification'],
+            'today_emoji':     fg_emoji(today['value']),
+            'today_color':     fg_color(today['value']),
+            'yesterday_value': int(yesterday['value']),
+            'yesterday_label': yesterday['value_classification'],
+            'week_value':      int(week_ago['value']),
+            'week_label':      week_ago['value_classification'],
         }
     except:
         return None
@@ -265,48 +291,34 @@ def get_coinbase_ios_rank():
         return None
 
 def rank_emoji(rank):
-    if rank is None:
-        return "⚪️ н/д"
-    if rank <= 10:
-        return f"🟢 #{rank}"
-    elif rank <= 50:
-        return f"🟡 #{rank}"
-    else:
-        return f"🔴 #{rank}"
+    if rank is None:      return "⚪️ н/д"
+    if rank <= 10:        return f"🟢 #{rank}"
+    elif rank <= 50:      return f"🟡 #{rank}"
+    else:                 return f"🔴 #{rank}"
 
 def rsi_label(rsi):
-    if rsi >= 70:
-        return f"{rsi:.0f} 🔴 перекуплений"
-    elif rsi <= 30:
-        return f"{rsi:.0f} 🟢 перепроданий"
-    else:
-        return f"{rsi:.0f} ⚪️ нейтр."
+    if rsi >= 70:   return f"{rsi:.0f} 🔴 перекуплений"
+    elif rsi <= 30: return f"{rsi:.0f} 🟢 перепроданий"
+    else:           return f"{rsi:.0f} ⚪️ нейтр."
 
 def calculate_forecast(current_price, ma50, rsi, fund_rate):
-    bull_score = 0
-    bear_score = 0
+    bull_score    = 0
+    bear_score    = 0
     neutral_score = 40
 
-    if current_price > ma50:
-        bull_score += 25
-    else:
-        bear_score += 25
+    if current_price > ma50: bull_score += 25
+    else:                    bear_score += 25
 
-    if rsi > 65:
-        bear_score += 30
-    elif rsi < 35:
-        bull_score += 30
-    else:
-        neutral_score += 20
+    if rsi > 65:        bear_score    += 30
+    elif rsi < 35:      bull_score    += 30
+    else:               neutral_score += 20
 
-    if fund_rate > 0.01:
-        bear_score += 15
-    elif fund_rate < 0:
-        bull_score += 15
+    if fund_rate > 0.01:  bear_score += 15
+    elif fund_rate < 0:   bull_score += 15
 
-    total = bull_score + bear_score + neutral_score
-    bull_pct = int((bull_score / total) * 100)
-    bear_pct = int((bear_score / total) * 100)
+    total       = bull_score + bear_score + neutral_score
+    bull_pct    = int((bull_score / total) * 100)
+    bear_pct    = int((bear_score / total) * 100)
     neutral_pct = 100 - bull_pct - bear_pct
 
     return bull_pct, neutral_pct, bear_pct
@@ -320,23 +332,24 @@ async def cmd_dash(message: types.Message):
     msg = await message.answer("🔄 Аналізую ринок, рахую ймовірності...")
 
     try:
-        df = get_btc_ta_data()
+        df          = get_btc_ta_data()
         pct_24, high_24, low_24, vol_m, fund_rate = get_btc_extra_data()
         rsi_intraday = get_rsi_intraday()
-        ios_rank = get_coinbase_ios_rank()
-        oi_data = get_open_interest()
-        channel = get_channel_30d(df)
-        onchain = get_hashrate_difficulty()
-        cb_premium = get_coinbase_premium()
-        fg = get_fear_greed()
+        ios_rank    = get_coinbase_ios_rank()
+        oi_data     = get_open_interest()
+        channel     = get_channel_30d(df)
+        onchain     = get_hashrate_difficulty()
+        cb_premium  = get_coinbase_premium()
+        fg          = get_fear_greed()
+        obv_vol     = get_obv_volume(df)
 
         current_price = df['close'].iloc[-1]
-        rsi = df['RSI'].iloc[-1]
-        ma50 = df['MA50'].iloc[-1]
+        rsi   = df['RSI'].iloc[-1]
+        ma50  = df['MA50'].iloc[-1]
         ma200 = df['MA200'].iloc[-1]
 
         resistance = df['high'].tail(14).max()
-        support = df['low'].tail(14).min()
+        support    = df['low'].tail(14).min()
 
         bull_pct, neutral_pct, bear_pct = calculate_forecast(current_price, ma50, rsi, fund_rate)
 
@@ -352,7 +365,7 @@ async def cmd_dash(message: types.Message):
             okx_pct     = int(oi_data['okx']     / oi_data['total'] * 100)
             if oi_data['change_24h'] is not None:
                 ch = oi_data['change_24h']
-                oi_ch_emoji = "🟢" if ch > 2 else "🔴" if ch < -2 else "⚪️"
+                oi_ch_emoji    = "🟢" if ch > 2 else "🔴" if ch < -2 else "⚪️"
                 oi_change_text = f"{oi_ch_emoji} {ch:+.1f}% за 24h"
             else:
                 oi_change_text = ""
@@ -377,6 +390,17 @@ async def cmd_dash(message: types.Message):
         else:
             channel_text = ""
 
+        # OBV + Volume 7d
+        if obv_vol:
+            div_text = f"\n{obv_vol['divergence']}" if obv_vol['divergence'] else ""
+            obv_text = (
+                f"📈 *OBV + Об'єм*\n"
+                f"OBV (20d): {obv_vol['obv_status']}{div_text}\n"
+                f"Об'єм 7d: {obv_vol['vol_emoji']} {obv_vol['vol_change_pct']:+.1f}% до попер. тижня\n\n"
+            )
+        else:
+            obv_text = ""
+
         # Hashrate + Difficulty
         if onchain:
             onchain_text = (
@@ -400,11 +424,9 @@ async def cmd_dash(message: types.Message):
 
         # Fear & Greed
         if fg:
-            # Зміна порівняно з вчора
-            delta = fg['today_value'] - fg['yesterday_value']
-            delta_text = f"{delta:+d} до вчора" if delta != 0 else "без змін"
+            delta       = fg['today_value'] - fg['yesterday_value']
+            delta_text  = f"{delta:+d} до вчора" if delta != 0 else "без змін"
             delta_emoji = "🟢" if delta > 0 else "🔴" if delta < 0 else "⚪️"
-
             fg_text = (
                 f"😱 *Fear & Greed Index*\n"
                 f"Зараз:   {fg['today_color']} {fg['today_value']} — {fg['today_label']} {fg['today_emoji']}\n"
@@ -429,7 +451,8 @@ async def cmd_dash(message: types.Message):
             f"MA50: ${ma50:,.0f} | MA200: ${ma200:,.0f}\n"
             f"RSI 1D: {rsi:.0f}  {rsi_status}\n\n"
 
-            + channel_text +
+            + channel_text
+            + obv_text +
 
             f"📊 *RSI Інтрадей*\n"
             f"5m:  {rsi_label(rsi_intraday['5m'])}\n"
@@ -462,7 +485,6 @@ async def handle(request):
     return web.Response(text="I am alive!")
 
 async def main():
-    # Веб-сервер для Render
     app = web.Application()
     app.add_routes([web.get('/', handle)])
     runner = web.AppRunner(app)
@@ -470,7 +492,6 @@ async def main():
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
-    
     print(f"Бот і веб-сервер запущені на порту {port}!")
     await dp.start_polling(bot)
 
